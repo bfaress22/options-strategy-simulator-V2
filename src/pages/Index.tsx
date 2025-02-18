@@ -1,10 +1,10 @@
-
 import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
 import { Plus, Trash2 } from 'lucide-react';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
 const Index = () => {
   // Basic parameters state
@@ -282,173 +282,311 @@ const Index = () => {
     }
   }, [strategy]);
 
+  // Stress Test Scenarios
+  const stressTestScenarios = {
+    base: {
+      name: "Base Case",
+      description: "Normal market conditions",
+      volatility: 0.2,
+      drift: 0.01,
+      priceShock: 0,
+      forwardBasis: 0
+    },
+    highVol: {
+      name: "High Volatility",
+      description: "Double volatility scenario",
+      volatility: 0.4,
+      drift: 0.01,
+      priceShock: 0,
+      forwardBasis: 0
+    },
+    crash: {
+      name: "Market Crash",
+      description: "High volatility, negative drift, price shock",
+      volatility: 0.5,
+      drift: -0.03,
+      priceShock: -0.2,
+      forwardBasis: 0
+    },
+    bull: {
+      name: "Bull Market",
+      description: "Low volatility, positive drift, upward shock",
+      volatility: 0.15,
+      drift: 0.02,
+      priceShock: 0.1,
+      forwardBasis: 0
+    },
+    contango: {
+      name: "Contango",
+      description: "Forward prices higher than spot (monthly basis in %)",
+      volatility: 0.2,
+      drift: 0.01,
+      priceShock: 0,
+      forwardBasis: 0.01
+    },
+    backwardation: {
+      name: "Backwardation",
+      description: "Forward prices lower than spot (monthly basis in %)",
+      volatility: 0.2,
+      drift: 0.01,
+      priceShock: 0,
+      forwardBasis: -0.01
+    }
+  };
+
+  // Apply stress test scenario
+  const applyStressTest = (scenarioKey: keyof typeof stressTestScenarios) => {
+    const scenario = stressTestScenarios[scenarioKey];
+    
+    // Update simulation parameters
+    setRealPriceParams(prev => ({
+      ...prev,
+      useSimulation: true,
+      volatility: scenario.volatility,
+      drift: scenario.drift
+    }));
+
+    // Apply price shock if any
+    if (scenario.priceShock !== 0) {
+      setParams(prev => ({
+        ...prev,
+        spotPrice: prev.spotPrice * (1 + scenario.priceShock)
+      }));
+    }
+
+    // Update forward curve if basis is specified
+    if (scenario.forwardBasis !== 0) {
+      const startDate = new Date(params.startDate);
+      const months = [];
+      let currentDate = new Date(startDate);
+
+      for (let i = 0; i < params.monthsToHedge; i++) {
+        currentDate.setMonth(currentDate.getMonth() + 1);
+        const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth() + 1}`;
+        const timeInYears = i / 12;
+        const forwardPrice = params.spotPrice * Math.exp(scenario.forwardBasis * timeInYears * 12);
+        
+        setManualForwards(prev => ({
+          ...prev,
+          [monthKey]: forwardPrice
+        }));
+      }
+    }
+
+    // Recalculate results with new parameters
+    calculateResults();
+  };
+
   return (
     <div className="w-full max-w-6xl mx-auto p-4 space-y-6">
-      <Card>
-        <CardHeader>
-          <CardTitle>Options Strategy Parameters</CardTitle>
-        </CardHeader>
-        <CardContent className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
-            <div>
-              <label className="block text-sm font-medium mb-1">Start Date</label>
-              <Input
-                type="date"
-                value={params.startDate}
-                onChange={(e) => setParams({...params, startDate: e.target.value})}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Months to Hedge</label>
-              <Input
-                type="number"
-                value={params.monthsToHedge}
-                onChange={(e) => setParams({...params, monthsToHedge: Number(e.target.value)})}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Interest Rate (%)</label>
-              <Input
-                type="number"
-                value={params.interestRate}
-                onChange={(e) => setParams({...params, interestRate: Number(e.target.value)})}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Total Volume</label>
-              <Input
-                type="number"
-                value={params.totalVolume}
-                onChange={(e) => setParams({...params, totalVolume: Number(e.target.value)})}
-              />
-            </div>
-            <div>
-              <label className="block text-sm font-medium mb-1">Spot Price</label>
-              <Input
-                type="number"
-                value={params.spotPrice}
-                onChange={(e) => setParams({...params, spotPrice: Number(e.target.value)})}
-              />
-            </div>
-          </div>
-
-          <div className="mt-6">
-            <h3 className="text-lg font-medium mb-4">Real Price Simulation</h3>
-            <div className="flex items-center mb-4">
-              <input
-                type="checkbox"
-                checked={realPriceParams.useSimulation}
-                onChange={(e) => setRealPriceParams(prev => ({...prev, useSimulation: e.target.checked}))}
-                className="mr-2"
-              />
-              <label>Use Monte Carlo Simulation</label>
-            </div>
-            
-            {realPriceParams.useSimulation && (
+      <Tabs defaultValue="parameters">
+        <TabsList>
+          <TabsTrigger value="parameters">Strategy Parameters</TabsTrigger>
+          <TabsTrigger value="stress">Stress Testing</TabsTrigger>
+        </TabsList>
+        
+        <TabsContent value="parameters">
+          <Card>
+            <CardHeader>
+              <CardTitle>Options Strategy Parameters</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
-                  <label className="block text-sm font-medium mb-1">Volatility (%)</label>
+                  <label className="block text-sm font-medium mb-1">Start Date</label>
                   <Input
-                    type="number"
-                    value={realPriceParams.volatility * 100}
-                    onChange={(e) => setRealPriceParams(prev => ({
-                      ...prev,
-                      volatility: Number(e.target.value) / 100
-                    }))}
+                    type="date"
+                    value={params.startDate}
+                    onChange={(e) => setParams({...params, startDate: e.target.value})}
                   />
                 </div>
                 <div>
-                  <label className="block text-sm font-medium mb-1">Drift (%)</label>
+                  <label className="block text-sm font-medium mb-1">Months to Hedge</label>
                   <Input
                     type="number"
-                    value={realPriceParams.drift * 100}
-                    onChange={(e) => setRealPriceParams(prev => ({
-                      ...prev,
-                      drift: Number(e.target.value) / 100
-                    }))}
+                    value={params.monthsToHedge}
+                    onChange={(e) => setParams({...params, monthsToHedge: Number(e.target.value)})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Interest Rate (%)</label>
+                  <Input
+                    type="number"
+                    value={params.interestRate}
+                    onChange={(e) => setParams({...params, interestRate: Number(e.target.value)})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Total Volume</label>
+                  <Input
+                    type="number"
+                    value={params.totalVolume}
+                    onChange={(e) => setParams({...params, totalVolume: Number(e.target.value)})}
+                  />
+                </div>
+                <div>
+                  <label className="block text-sm font-medium mb-1">Spot Price</label>
+                  <Input
+                    type="number"
+                    value={params.spotPrice}
+                    onChange={(e) => setParams({...params, spotPrice: Number(e.target.value)})}
                   />
                 </div>
               </div>
-            )}
-          </div>
-        </CardContent>
-      </Card>
 
-      <Card>
-        <CardHeader className="flex flex-row items-center justify-between">
-          <CardTitle>Strategy Components</CardTitle>
-          <Button onClick={addOption} className="flex items-center gap-2">
-            <Plus size={16} /> Add Option
+              <div className="mt-6">
+                <h3 className="text-lg font-medium mb-4">Real Price Simulation</h3>
+                <div className="flex items-center mb-4">
+                  <input
+                    type="checkbox"
+                    checked={realPriceParams.useSimulation}
+                    onChange={(e) => setRealPriceParams(prev => ({...prev, useSimulation: e.target.checked}))}
+                    className="mr-2"
+                  />
+                  <label>Use Monte Carlo Simulation</label>
+                </div>
+                
+                {realPriceParams.useSimulation && (
+                  <div className="grid grid-cols-2 gap-4">
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Volatility (%)</label>
+                      <Input
+                        type="number"
+                        value={realPriceParams.volatility * 100}
+                        onChange={(e) => setRealPriceParams(prev => ({
+                          ...prev,
+                          volatility: Number(e.target.value) / 100
+                        }))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Drift (%)</label>
+                      <Input
+                        type="number"
+                        value={realPriceParams.drift * 100}
+                        onChange={(e) => setRealPriceParams(prev => ({
+                          ...prev,
+                          drift: Number(e.target.value) / 100
+                        }))}
+                      />
+                    </div>
+                  </div>
+                )}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader className="flex flex-row items-center justify-between">
+              <CardTitle>Strategy Components</CardTitle>
+              <Button onClick={addOption} className="flex items-center gap-2">
+                <Plus size={16} /> Add Option
+              </Button>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {strategy.map((option, index) => (
+                  <div key={index} className="grid grid-cols-6 gap-4 items-center p-4 border rounded">
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Type</label>
+                      <select
+                        className="w-full p-2 border rounded"
+                        value={option.type}
+                        onChange={(e) => updateOption(index, 'type', e.target.value)}
+                      >
+                        <option value="call">Call</option>
+                        <option value="put">Put</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Strike</label>
+                      <Input
+                        type="number"
+                        value={option.strike}
+                        onChange={(e) => updateOption(index, 'strike', Number(e.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Strike Type</label>
+                      <select
+                        className="w-full p-2 border rounded"
+                        value={option.strikeType}
+                        onChange={(e) => updateOption(index, 'strikeType', e.target.value)}
+                      >
+                        <option value="percent">Percentage</option>
+                        <option value="absolute">Absolute</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Volatility (%)</label>
+                      <Input
+                        type="number"
+                        value={option.volatility}
+                        onChange={(e) => updateOption(index, 'volatility', Number(e.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Quantity (%)</label>
+                      <Input
+                        type="number"
+                        value={option.quantity}
+                        onChange={(e) => updateOption(index, 'quantity', Number(e.target.value))}
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <Button
+                        variant="destructive"
+                        onClick={() => removeOption(index)}
+                        className="flex items-center justify-center"
+                      >
+                        <Trash2 size={16} />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
+          <Button onClick={calculateResults} className="w-full">
+            Calculate Strategy Results
           </Button>
-        </CardHeader>
-        <CardContent>
-          <div className="space-y-4">
-            {strategy.map((option, index) => (
-              <div key={index} className="grid grid-cols-6 gap-4 items-center p-4 border rounded">
-                <div>
-                  <label className="block text-sm font-medium mb-1">Type</label>
-                  <select
-                    className="w-full p-2 border rounded"
-                    value={option.type}
-                    onChange={(e) => updateOption(index, 'type', e.target.value)}
-                  >
-                    <option value="call">Call</option>
-                    <option value="put">Put</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Strike</label>
-                  <Input
-                    type="number"
-                    value={option.strike}
-                    onChange={(e) => updateOption(index, 'strike', Number(e.target.value))}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Strike Type</label>
-                  <select
-                    className="w-full p-2 border rounded"
-                    value={option.strikeType}
-                    onChange={(e) => updateOption(index, 'strikeType', e.target.value)}
-                  >
-                    <option value="percent">Percentage</option>
-                    <option value="absolute">Absolute</option>
-                  </select>
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Volatility (%)</label>
-                  <Input
-                    type="number"
-                    value={option.volatility}
-                    onChange={(e) => updateOption(index, 'volatility', Number(e.target.value))}
-                  />
-                </div>
-                <div>
-                  <label className="block text-sm font-medium mb-1">Quantity (%)</label>
-                  <Input
-                    type="number"
-                    value={option.quantity}
-                    onChange={(e) => updateOption(index, 'quantity', Number(e.target.value))}
-                  />
-                </div>
-                <div className="flex items-end">
-                  <Button
-                    variant="destructive"
-                    onClick={() => removeOption(index)}
-                    className="flex items-center justify-center"
-                  >
-                    <Trash2 size={16} />
-                  </Button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </CardContent>
-      </Card>
+        </TabsContent>
 
-      <Button onClick={calculateResults} className="w-full">
-        Calculate Strategy Results
-      </Button>
+        <TabsContent value="stress">
+          <Card>
+            <CardHeader>
+              <CardTitle>Stress Test Scenarios</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                {Object.entries(stressTestScenarios).map(([key, scenario]) => (
+                  <Card key={key} className="p-4">
+                    <h3 className="font-bold text-lg mb-2">{scenario.name}</h3>
+                    <p className="text-sm text-gray-600 mb-4">{scenario.description}</p>
+                    <div className="space-y-2 text-sm">
+                      <p>Volatility: {(scenario.volatility * 100).toFixed(1)}%</p>
+                      <p>Drift: {(scenario.drift * 100).toFixed(1)}%</p>
+                      {scenario.priceShock !== 0 && (
+                        <p>Price Shock: {(scenario.priceShock * 100).toFixed(1)}%</p>
+                      )}
+                      {scenario.forwardBasis !== 0 && (
+                        <p>Monthly Basis: {(scenario.forwardBasis * 100).toFixed(1)}%</p>
+                      )}
+                    </div>
+                    <Button 
+                      className="w-full mt-4"
+                      onClick={() => applyStressTest(key as keyof typeof stressTestScenarios)}
+                    >
+                      Run Scenario
+                    </Button>
+                  </Card>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
 
       {results && (
         <>
@@ -755,4 +893,3 @@ const Index = () => {
 };
 
 export default Index;
-
