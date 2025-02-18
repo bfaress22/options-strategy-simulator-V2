@@ -1,3 +1,4 @@
+
 import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -409,9 +410,10 @@ const Index = () => {
     if (!scenario) return;
     
     // Reset spot price to initial value before applying shock
+    const newSpotPrice = initialSpotPrice * (1 + Number(scenario.priceShock));
     setParams(prev => ({
       ...prev,
-      spotPrice: initialSpotPrice * (1 + (scenario.priceShock || 0))
+      spotPrice: newSpotPrice
     }));
 
     // Update simulation parameters
@@ -434,8 +436,7 @@ const Index = () => {
         currentDate.setMonth(currentDate.getMonth() + 1);
         const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth() + 1}`;
         const timeInYears = i / 12;
-        const forwardPrice = initialSpotPrice * (1 + (scenario.priceShock || 0)) * 
-          Math.exp(scenario.forwardBasis * timeInYears * 12);
+        const forwardPrice = newSpotPrice * Math.exp(Number(scenario.forwardBasis) * timeInYears * 12);
         
         setManualForwards(prev => ({
           ...prev,
@@ -1101,3 +1102,4 @@ const Index = () => {
 };
 
 export default Index;
+
