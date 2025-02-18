@@ -6,6 +6,45 @@ import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, Responsi
 import { Plus, Trash2 } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 
+interface StressTestScenario {
+  name: string;
+  description: string;
+  volatility: number;
+  drift: number;
+  priceShock: number;
+  forwardBasis: number;
+  isCustom?: boolean;
+  isEditable?: boolean;
+}
+
+interface StrategyComponent {
+  type: 'call' | 'put';
+  strike: number;
+  strikeType: 'percent' | 'absolute';
+  volatility: number;
+  quantity: number;
+}
+
+interface Result {
+  date: string;
+  timeToMaturity: number;
+  forward: number;
+  realPrice: number;
+  optionPrices: Array<{
+    type: string;
+    price: number;
+    quantity: number;
+    strike: number;
+    label: string;
+  }>;
+  strategyPrice: number;
+  totalPayoff: number;
+  monthlyVolume: number;
+  hedgedCost: number;
+  unhedgedCost: number;
+  deltaPnL: number;
+}
+
 const Index = () => {
   // Basic parameters state
   const [params, setParams] = useState({
@@ -44,6 +83,80 @@ const Index = () => {
     'January', 'February', 'March', 'April', 'May', 'June', 
     'July', 'August', 'September', 'October', 'November', 'December'
   ];
+
+  // Custom scenario state
+  const [customScenario, setCustomScenario] = useState<StressTestScenario>({
+    name: "Custom Case",
+    description: "User-defined scenario",
+    volatility: 0.2,
+    drift: 0.01,
+    priceShock: 0,
+    forwardBasis: 0,
+    isCustom: true
+  });
+
+  // Stress Test Scenarios
+  const [stressTestScenarios, setStressTestScenarios] = useState<Record<string, StressTestScenario>>({
+    base: {
+      name: "Base Case",
+      description: "Normal market conditions",
+      volatility: 0.2,
+      drift: 0.01,
+      priceShock: 0,
+      forwardBasis: 0
+    },
+    highVol: {
+      name: "High Volatility",
+      description: "Double volatility scenario",
+      volatility: 0.4,
+      drift: 0.01,
+      priceShock: 0,
+      forwardBasis: 0
+    },
+    crash: {
+      name: "Market Crash",
+      description: "High volatility, negative drift, price shock",
+      volatility: 0.5,
+      drift: -0.03,
+      priceShock: -0.2,
+      forwardBasis: 0
+    },
+    bull: {
+      name: "Bull Market",
+      description: "Low volatility, positive drift, upward shock",
+      volatility: 0.15,
+      drift: 0.02,
+      priceShock: 0.1,
+      forwardBasis: 0
+    },
+    contango: {
+      name: "Contango",
+      description: "Forward prices higher than spot (monthly basis in %)",
+      volatility: 0.2,
+      drift: 0.01,
+      priceShock: 0,
+      forwardBasis: 0.01,
+      isEditable: true
+    },
+    backwardation: {
+      name: "Backwardation",
+      description: "Forward prices lower than spot (monthly basis in %)",
+      volatility: 0.2,
+      drift: 0.01,
+      priceShock: 0,
+      forwardBasis: -0.01,
+      isEditable: true
+    },
+    custom: {
+      name: "Custom Case",
+      description: "User-defined scenario",
+      volatility: 0.2,
+      drift: 0.01,
+      priceShock: 0,
+      forwardBasis: 0,
+      isCustom: true
+    }
+  });
 
   // Calculate Black-Scholes Option Price
   const calculateOptionPrice = (type, S, K, r, t, sigma) => {
@@ -282,61 +395,10 @@ const Index = () => {
     }
   }, [strategy]);
 
-  // Stress Test Scenarios
-  const stressTestScenarios = {
-    base: {
-      name: "Base Case",
-      description: "Normal market conditions",
-      volatility: 0.2,
-      drift: 0.01,
-      priceShock: 0,
-      forwardBasis: 0
-    },
-    highVol: {
-      name: "High Volatility",
-      description: "Double volatility scenario",
-      volatility: 0.4,
-      drift: 0.01,
-      priceShock: 0,
-      forwardBasis: 0
-    },
-    crash: {
-      name: "Market Crash",
-      description: "High volatility, negative drift, price shock",
-      volatility: 0.5,
-      drift: -0.03,
-      priceShock: -0.2,
-      forwardBasis: 0
-    },
-    bull: {
-      name: "Bull Market",
-      description: "Low volatility, positive drift, upward shock",
-      volatility: 0.15,
-      drift: 0.02,
-      priceShock: 0.1,
-      forwardBasis: 0
-    },
-    contango: {
-      name: "Contango",
-      description: "Forward prices higher than spot (monthly basis in %)",
-      volatility: 0.2,
-      drift: 0.01,
-      priceShock: 0,
-      forwardBasis: 0.01
-    },
-    backwardation: {
-      name: "Backwardation",
-      description: "Forward prices lower than spot (monthly basis in %)",
-      volatility: 0.2,
-      drift: 0.01,
-      priceShock: 0,
-      forwardBasis: -0.01
-    }
-  };
-
   // Apply stress test scenario
-  const applyStressTest = (scenarioKey: keyof typeof stressTestScenarios) => {
+  const applyStressTest = (scenarioKey: string) => {
     const scenario = stressTestScenarios[scenarioKey];
+    if (!scenario) return;
     
     // Update simulation parameters
     setRealPriceParams(prev => ({
@@ -353,6 +415,9 @@ const Index = () => {
         spotPrice: prev.spotPrice * (1 + scenario.priceShock)
       }));
     }
+
+    // Clear previous forward prices
+    setManualForwards({});
 
     // Update forward curve if basis is specified
     if (scenario.forwardBasis !== 0) {
@@ -375,6 +440,17 @@ const Index = () => {
 
     // Recalculate results with new parameters
     calculateResults();
+  };
+
+  // Update stress test scenario
+  const updateScenario = (key: string, field: keyof StressTestScenario, value: number) => {
+    setStressTestScenarios(prev => ({
+      ...prev,
+      [key]: {
+        ...prev[key],
+        [field]: value
+      }
+    }));
   };
 
   return (
@@ -554,6 +630,75 @@ const Index = () => {
         </TabsContent>
 
         <TabsContent value="stress">
+          <Card className="mb-6">
+            <CardHeader>
+              <CardTitle>Strategy Components</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {strategy.map((option, index) => (
+                  <div key={index} className="grid grid-cols-6 gap-4 items-center p-4 border rounded">
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Type</label>
+                      <select
+                        className="w-full p-2 border rounded"
+                        value={option.type}
+                        onChange={(e) => updateOption(index, 'type', e.target.value)}
+                      >
+                        <option value="call">Call</option>
+                        <option value="put">Put</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Strike</label>
+                      <Input
+                        type="number"
+                        value={option.strike}
+                        onChange={(e) => updateOption(index, 'strike', Number(e.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Strike Type</label>
+                      <select
+                        className="w-full p-2 border rounded"
+                        value={option.strikeType}
+                        onChange={(e) => updateOption(index, 'strikeType', e.target.value)}
+                      >
+                        <option value="percent">Percentage</option>
+                        <option value="absolute">Absolute</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Volatility (%)</label>
+                      <Input
+                        type="number"
+                        value={option.volatility}
+                        onChange={(e) => updateOption(index, 'volatility', Number(e.target.value))}
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-sm font-medium mb-1">Quantity (%)</label>
+                      <Input
+                        type="number"
+                        value={option.quantity}
+                        onChange={(e) => updateOption(index, 'quantity', Number(e.target.value))}
+                      />
+                    </div>
+                    <div className="flex items-end">
+                      <Button
+                        variant="destructive"
+                        onClick={() => removeOption(index)}
+                        className="flex items-center justify-center"
+                      >
+                        <Trash2 size={16} />
+                      </Button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </CardContent>
+          </Card>
+
           <Card>
             <CardHeader>
               <CardTitle>Stress Test Scenarios</CardTitle>
@@ -564,19 +709,61 @@ const Index = () => {
                   <Card key={key} className="p-4">
                     <h3 className="font-bold text-lg mb-2">{scenario.name}</h3>
                     <p className="text-sm text-gray-600 mb-4">{scenario.description}</p>
-                    <div className="space-y-2 text-sm">
-                      <p>Volatility: {(scenario.volatility * 100).toFixed(1)}%</p>
-                      <p>Drift: {(scenario.drift * 100).toFixed(1)}%</p>
-                      {scenario.priceShock !== 0 && (
-                        <p>Price Shock: {(scenario.priceShock * 100).toFixed(1)}%</p>
-                      )}
-                      {scenario.forwardBasis !== 0 && (
-                        <p>Monthly Basis: {(scenario.forwardBasis * 100).toFixed(1)}%</p>
+                    <div className="space-y-2">
+                      {scenario.isCustom ? (
+                        <>
+                          <div>
+                            <label className="block text-sm font-medium mb-1">Volatility (%)</label>
+                            <Input
+                              type="number"
+                              value={scenario.volatility * 100}
+                              onChange={(e) => updateScenario(key, 'volatility', Number(e.target.value) / 100)}
+                              step="0.1"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium mb-1">Drift (%)</label>
+                            <Input
+                              type="number"
+                              value={scenario.drift * 100}
+                              onChange={(e) => updateScenario(key, 'drift', Number(e.target.value) / 100)}
+                              step="0.1"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-sm font-medium mb-1">Price Shock (%)</label>
+                            <Input
+                              type="number"
+                              value={scenario.priceShock * 100}
+                              onChange={(e) => updateScenario(key, 'priceShock', Number(e.target.value) / 100)}
+                              step="0.1"
+                            />
+                          </div>
+                        </>
+                      ) : (
+                        <>
+                          <p className="text-sm">Volatility: {(scenario.volatility * 100).toFixed(1)}%</p>
+                          <p className="text-sm">Drift: {(scenario.drift * 100).toFixed(1)}%</p>
+                          {scenario.priceShock !== 0 && (
+                            <p className="text-sm">Price Shock: {(scenario.priceShock * 100).toFixed(1)}%</p>
+                          )}
+                          {scenario.isEditable && (
+                            <div>
+                              <label className="block text-sm font-medium mb-1">Monthly Basis (%)</label>
+                              <Input
+                                type="number"
+                                value={scenario.forwardBasis * 100}
+                                onChange={(e) => updateScenario(key, 'forwardBasis', Number(e.target.value) / 100)}
+                                step="0.1"
+                              />
+                            </div>
+                          )}
+                        </>
                       )}
                     </div>
                     <Button 
                       className="w-full mt-4"
-                      onClick={() => applyStressTest(key as keyof typeof stressTestScenarios)}
+                      onClick={() => applyStressTest(key)}
                     >
                       Run Scenario
                     </Button>
