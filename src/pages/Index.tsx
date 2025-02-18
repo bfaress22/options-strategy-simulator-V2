@@ -55,6 +55,14 @@ const Index = () => {
     spotPrice: 100
   });
 
+  // Keep track of initial spot price
+  const [initialSpotPrice, setInitialSpotPrice] = useState(params.spotPrice);
+
+  // Update initial spot price when user changes it manually
+  useEffect(() => {
+    setInitialSpotPrice(params.spotPrice);
+  }, [params.spotPrice]);
+
   // Strategy components state
   const [strategy, setStrategy] = useState([]);
 
@@ -400,6 +408,12 @@ const Index = () => {
     const scenario = stressTestScenarios[scenarioKey];
     if (!scenario) return;
     
+    // Reset spot price to initial value before applying shock
+    setParams(prev => ({
+      ...prev,
+      spotPrice: initialSpotPrice * (1 + (scenario.priceShock || 0))
+    }));
+
     // Update simulation parameters
     setRealPriceParams(prev => ({
       ...prev,
@@ -408,28 +422,20 @@ const Index = () => {
       drift: scenario.drift
     }));
 
-    // Apply price shock if any
-    if (scenario.priceShock !== 0) {
-      setParams(prev => ({
-        ...prev,
-        spotPrice: prev.spotPrice * (1 + scenario.priceShock)
-      }));
-    }
-
     // Clear previous forward prices
     setManualForwards({});
 
     // Update forward curve if basis is specified
     if (scenario.forwardBasis !== 0) {
       const startDate = new Date(params.startDate);
-      const months = [];
       let currentDate = new Date(startDate);
 
       for (let i = 0; i < params.monthsToHedge; i++) {
         currentDate.setMonth(currentDate.getMonth() + 1);
         const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth() + 1}`;
         const timeInYears = i / 12;
-        const forwardPrice = params.spotPrice * Math.exp(scenario.forwardBasis * timeInYears * 12);
+        const forwardPrice = initialSpotPrice * (1 + (scenario.priceShock || 0)) * 
+          Math.exp(scenario.forwardBasis * timeInYears * 12);
         
         setManualForwards(prev => ({
           ...prev,
@@ -451,6 +457,34 @@ const Index = () => {
         [field]: value
       }
     }));
+  };
+
+  // Type guard for results
+  const isValidResult = (result: any): result is Result => {
+    return result && 
+      typeof result.hedgedCost === 'number' &&
+      typeof result.unhedgedCost === 'number' &&
+      typeof result.deltaPnL === 'number';
+  };
+
+  // Update the yearlyResults calculation with type checking
+  const calculateYearlyResults = (results: Result[]) => {
+    return results.reduce((acc: Record<string, { hedgedCost: number; unhedgedCost: number; deltaPnL: number }>, row) => {
+      const year = row.date.split(' ')[1];
+      if (!acc[year]) {
+        acc[year] = {
+          hedgedCost: 0,
+          unhedgedCost: 0,
+          deltaPnL: 0
+        };
+      }
+      if (isValidResult(row)) {
+        acc[year].hedgedCost += row.hedgedCost;
+        acc[year].unhedgedCost += row.unhedgedCost;
+        acc[year].deltaPnL += row.deltaPnL;
+      }
+      return acc;
+    }, {});
   };
 
   return (
@@ -962,20 +996,7 @@ const Index = () => {
             <CardContent>
               <div className="overflow-x-auto">
                 {(() => {
-                  const yearlyResults = results.reduce((acc, row) => {
-                    const year = row.date.split(' ')[1];
-                    if (!acc[year]) {
-                      acc[year] = {
-                        hedgedCost: 0,
-                        unhedgedCost: 0,
-                        deltaPnL: 0
-                      };
-                    }
-                    acc[year].hedgedCost += row.hedgedCost;
-                    acc[year].unhedgedCost += row.unhedgedCost;
-                    acc[year].deltaPnL += row.deltaPnL;
-                    return acc;
-                  }, {});
+                  const yearlyResults = calculateYearlyResults(results);
 
                   return (
                     <table className="w-full border-collapse mb-6">
