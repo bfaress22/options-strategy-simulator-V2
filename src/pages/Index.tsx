@@ -1,11 +1,14 @@
-
 import React, { useState, useEffect } from 'react';
 import { Card, CardHeader, CardTitle, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, Legend, ResponsiveContainer } from 'recharts';
-import { Plus, Trash2 } from 'lucide-react';
+import { Plus, Trash2, Save } from 'lucide-react';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Link } from 'react-router-dom';
+import { CalculatorState } from '../types/CalculatorState';
+import jsPDF from 'jspdf';
+import html2canvas from 'html2canvas';
 
 interface StressTestScenario {
   name: string;
@@ -13,7 +16,8 @@ interface StressTestScenario {
   volatility: number;
   drift: number;
   priceShock: number;
-  forwardBasis: number;
+  forwardBasis?: number;
+  realBasis?: number;
   isCustom?: boolean;
   isEditable?: boolean;
 }
@@ -46,45 +50,123 @@ interface Result {
   deltaPnL: number;
 }
 
+interface SavedScenario {
+  id: string;
+  name: string;
+  timestamp: number;
+  params: {
+    startDate: string;
+    monthsToHedge: number;
+    interestRate: number;
+    totalVolume: number;
+    spotPrice: number;
+  };
+  strategy: StrategyComponent[];
+  results: Result[];
+  payoffData: Array<{ price: number; payoff: number }>;
+  stressTest?: StressTestScenario;
+}
+
+const DEFAULT_SCENARIOS = {
+  base: {
+    name: "Base Case",
+    description: "Normal market conditions",
+    volatility: 0.2,
+    drift: 0.01,
+    priceShock: 0,
+    forwardBasis: 0,
+    isEditable: true
+  },
+  highVol: {
+    name: "High Volatility",
+    description: "Double volatility scenario",
+    volatility: 0.4,
+    drift: 0.01,
+    priceShock: 0,
+    forwardBasis: 0,
+    isEditable: true
+  },
+  crash: {
+    name: "Market Crash",
+    description: "High volatility, negative drift, price shock",
+    volatility: 0.5,
+    drift: -0.03,
+    priceShock: -0.2,
+    forwardBasis: 0,
+    isEditable: true
+  },
+  bull: {
+    name: "Bull Market",
+    description: "Low volatility, positive drift, upward shock",
+    volatility: 0.15,
+    drift: 0.02,
+    priceShock: 0.1,
+    forwardBasis: 0,
+    isEditable: true
+  }
+};
+
 const Index = () => {
+  // Add state for active tab
+  const [activeTab, setActiveTab] = useState(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).activeTab : 'parameters';
+  });
+
   // Basic parameters state
-  const [params, setParams] = useState({
-    startDate: new Date().toISOString().split('T')[0],
-    monthsToHedge: 12,
-    interestRate: 2.0,
-    totalVolume: 1000000,
-    spotPrice: 100
+  const [params, setParams] = useState(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).params : {
+      startDate: new Date().toISOString().split('T')[0],
+      monthsToHedge: 12,
+      interestRate: 2.0,
+      totalVolume: 1000000,
+      spotPrice: 100
+    };
   });
 
   // Keep track of initial spot price
-  const [initialSpotPrice, setInitialSpotPrice] = useState(params.spotPrice);
-
-  // Update initial spot price when user changes it manually
-  useEffect(() => {
-    setInitialSpotPrice(params.spotPrice);
-  }, [params.spotPrice]);
+  const [initialSpotPrice, setInitialSpotPrice] = useState<number>(params.spotPrice);
 
   // Strategy components state
-  const [strategy, setStrategy] = useState([]);
+  const [strategy, setStrategy] = useState(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).strategy : [];
+  });
 
   // Results state
-  const [results, setResults] = useState(null);
+  const [results, setResults] = useState(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).results : null;
+  });
 
   // Manual forward prices state
-  const [manualForwards, setManualForwards] = useState({});
+  const [manualForwards, setManualForwards] = useState(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).manualForwards : {};
+  });
 
   // Real prices state
-  const [realPrices, setRealPrices] = useState({});
+  const [realPrices, setRealPrices] = useState(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).realPrices : {};
+  });
 
   // Payoff data state
-  const [payoffData, setPayoffData] = useState([]);
+  const [payoffData, setPayoffData] = useState(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).payoffData : [];
+  });
 
   // Real prices simulation parameters
-  const [realPriceParams, setRealPriceParams] = useState({
-    useSimulation: false,
-    volatility: 0.3,
-    drift: 0.01,
-    numSimulations: 1000
+  const [realPriceParams, setRealPriceParams] = useState(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).realPriceParams : {
+      useSimulation: false,
+      volatility: 0.3,
+      drift: 0.01,
+      numSimulations: 1000
+    };
   });
 
   // Month names in English
@@ -94,69 +176,9 @@ const Index = () => {
   ];
 
   // Custom scenario state
-  const [customScenario, setCustomScenario] = useState<StressTestScenario>({
-    name: "Custom Case",
-    description: "User-defined scenario",
-    volatility: 0.2,
-    drift: 0.01,
-    priceShock: 0,
-    forwardBasis: 0,
-    isCustom: true
-  });
-
-  // Stress Test Scenarios
-  const [stressTestScenarios, setStressTestScenarios] = useState<Record<string, StressTestScenario>>({
-    base: {
-      name: "Base Case",
-      description: "Normal market conditions",
-      volatility: 0.2,
-      drift: 0.01,
-      priceShock: 0,
-      forwardBasis: 0
-    },
-    highVol: {
-      name: "High Volatility",
-      description: "Double volatility scenario",
-      volatility: 0.4,
-      drift: 0.01,
-      priceShock: 0,
-      forwardBasis: 0
-    },
-    crash: {
-      name: "Market Crash",
-      description: "High volatility, negative drift, price shock",
-      volatility: 0.5,
-      drift: -0.03,
-      priceShock: -0.2,
-      forwardBasis: 0
-    },
-    bull: {
-      name: "Bull Market",
-      description: "Low volatility, positive drift, upward shock",
-      volatility: 0.15,
-      drift: 0.02,
-      priceShock: 0.1,
-      forwardBasis: 0
-    },
-    contango: {
-      name: "Contango",
-      description: "Forward prices higher than spot (monthly basis in %)",
-      volatility: 0.2,
-      drift: 0.01,
-      priceShock: 0,
-      forwardBasis: 0.01,
-      isEditable: true
-    },
-    backwardation: {
-      name: "Backwardation",
-      description: "Forward prices lower than spot (monthly basis in %)",
-      volatility: 0.2,
-      drift: 0.01,
-      priceShock: 0,
-      forwardBasis: -0.01,
-      isEditable: true
-    },
-    custom: {
+  const [customScenario, setCustomScenario] = useState<StressTestScenario>(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).customScenario : {
       name: "Custom Case",
       description: "User-defined scenario",
       volatility: 0.2,
@@ -164,8 +186,110 @@ const Index = () => {
       priceShock: 0,
       forwardBasis: 0,
       isCustom: true
-    }
+    };
   });
+
+  // Stress Test Scenarios
+  const [stressTestScenarios, setStressTestScenarios] = useState<Record<string, StressTestScenario>>(() => {
+    const savedState = localStorage.getItem('calculatorState');
+    return savedState ? JSON.parse(savedState).stressTestScenarios : {
+      base: {
+        name: "Base Case",
+        description: "Normal market conditions",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0,
+        isEditable: true
+      },
+      highVol: {
+        name: "High Volatility",
+        description: "Double volatility scenario",
+        volatility: 0.4,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0,
+        isEditable: true
+      },
+      crash: {
+        name: "Market Crash",
+        description: "High volatility, negative drift, price shock",
+        volatility: 0.5,
+        drift: -0.03,
+        priceShock: -0.2,
+        forwardBasis: 0,
+        isEditable: true
+      },
+      bull: {
+        name: "Bull Market",
+        description: "Low volatility, positive drift, upward shock",
+        volatility: 0.15,
+        drift: 0.02,
+        priceShock: 0.1,
+        forwardBasis: 0,
+        isEditable: true
+      },
+      contango: {
+        name: "Contango",
+        description: "Forward prices higher than spot (monthly basis in %)",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0.01,
+        isEditable: true
+      },
+      backwardation: {
+        name: "Backwardation",
+        description: "Forward prices lower than spot (monthly basis in %)",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: -0.01,
+        isEditable: true
+      },
+      contangoReal: {
+        name: "Contango (Real Prices)",
+        description: "Real prices higher than spot (monthly basis in %)",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        realBasis: 0.01,
+        isEditable: true
+      },
+      backwardationReal: {
+        name: "Backwardation (Real Prices)",
+        description: "Real prices lower than spot (monthly basis in %)",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        realBasis: -0.01,
+        isEditable: true
+      },
+      custom: {
+        name: "Custom Case",
+        description: "User-defined scenario",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0,
+        isCustom: true
+      }
+    };
+  });
+
+  // Add this new state
+  const [activeStressTest, setActiveStressTest] = useState<string | null>(null);
+
+  // Add state for showing inputs
+  const [showInputs, setShowInputs] = useState<Record<string, boolean>>({});
+
+  // Toggle inputs visibility for a scenario
+  const toggleInputs = (key: string) => {
+    setShowInputs(prev => ({
+      ...prev,
+      [key]: !prev[key]
+    }));
+  };
 
   // Calculate Black-Scholes Option Price
   const calculateOptionPrice = (type, S, K, r, t, sigma) => {
@@ -195,7 +319,7 @@ const Index = () => {
     x = Math.abs(x);
     
     const t = 1.0/(1.0 + p*x);
-    const y = 1.0 - (((((a5*t + a4)*t) + a3)*t + a2)*t + a1)*t*Math.exp(-x*x);
+    const y = 1.0 - (((((a5*t + a4)*t) + a3)*t + a2)*t*Math.exp(-x*x));
     
     return sign*y;
   };
@@ -321,7 +445,7 @@ const Index = () => {
     }
 
     const timeToMaturities = months.map(date => {
-      const diffTime = Math.abs(date - startDate);
+      const diffTime = Math.abs(date.getTime() - startDate.getTime());
       return diffTime / (325.25 * 24 * 60 * 60 * 1000);
     });
 
@@ -331,8 +455,9 @@ const Index = () => {
       // Get forward price
       const forward = (() => {
         const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+        const timeDiff = date.getTime() - startDate.getTime();
         return manualForwards[monthKey] || 
-          params.spotPrice * Math.exp(params.interestRate/100 * (date - startDate)/(1000 * 60 * 60 * 24 * 365));
+          initialSpotPrice * Math.exp(params.interestRate/100 * timeDiff/(1000 * 60 * 60 * 24 * 365));
       })();
 
       // Get real price and store monthKey for reuse
@@ -405,38 +530,40 @@ const Index = () => {
   }, [strategy]);
 
   // Apply stress test scenario
-  const applyStressTest = (scenarioKey: string) => {
-    const scenario = stressTestScenarios[scenarioKey];
+  const applyStressTest = (key: string) => {
+    setActiveStressTest(key);
+    const scenario = stressTestScenarios[key];
     if (!scenario) return;
     
-    // Reset spot price to initial value before applying shock
-    const newSpotPrice = initialSpotPrice * (1 + Number(scenario.priceShock));
-    setParams(prev => ({
-      ...prev,
-      spotPrice: newSpotPrice
-    }));
-
+    // Calculate stressed spot price
+    const stressedSpotPrice = initialSpotPrice * (1 + Number(scenario.priceShock));
+    
     // Update simulation parameters
     setRealPriceParams(prev => ({
       ...prev,
-      useSimulation: true,
+      useSimulation: !scenario.realBasis, // Disable simulation if using real basis
       volatility: scenario.volatility,
       drift: scenario.drift
     }));
 
-    // Clear previous forward prices
-    setManualForwards({});
+    // Clear previous prices
+    if (scenario.forwardBasis !== undefined) {
+      setManualForwards({});
+    }
+    if (scenario.realBasis !== undefined) {
+      setRealPrices({});
+    }
 
-    // Update forward curve if basis is specified
-    if (scenario.forwardBasis !== 0) {
-      const startDate = new Date(params.startDate);
-      let currentDate = new Date(startDate);
+    const startDate = new Date(params.startDate);
+    let currentDate = new Date(startDate);
 
+    // Update forward curve if forwardBasis is specified (only for traditional contango/backwardation)
+    if (scenario.forwardBasis !== undefined && scenario.forwardBasis !== 0) {
       for (let i = 0; i < params.monthsToHedge; i++) {
         currentDate.setMonth(currentDate.getMonth() + 1);
         const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth() + 1}`;
         const timeInYears = i / 12;
-        const forwardPrice = newSpotPrice * Math.exp(Number(scenario.forwardBasis) * timeInYears * 12);
+        const forwardPrice = stressedSpotPrice * Math.exp(Number(scenario.forwardBasis) * timeInYears * 12);
         
         setManualForwards(prev => ({
           ...prev,
@@ -445,7 +572,44 @@ const Index = () => {
       }
     }
 
-    // Recalculate results with new parameters
+    // Update real prices if realBasis is specified (for real price scenarios)
+    if (scenario.realBasis !== undefined && scenario.realBasis !== 0) {
+      currentDate = new Date(startDate);
+      
+      // First, calculate forward prices without any basis
+      const baseForwards = {};
+      for (let i = 0; i < params.monthsToHedge; i++) {
+        currentDate.setMonth(currentDate.getMonth() + 1);
+        const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth() + 1}`;
+        const timeInYears = i / 12;
+        // Calculate forward price using risk-free rate only
+        const forwardPrice = stressedSpotPrice * Math.exp((params.interestRate/100) * timeInYears);
+        baseForwards[monthKey] = forwardPrice;
+      }
+
+      // Reset currentDate for real prices
+      currentDate = new Date(startDate);
+      for (let i = 0; i < params.monthsToHedge; i++) {
+        currentDate.setMonth(currentDate.getMonth() + 1);
+        const monthKey = `${currentDate.getFullYear()}-${currentDate.getMonth() + 1}`;
+        const timeInYears = i / 12;
+        // Apply basis only to real prices
+        const realPrice = stressedSpotPrice * Math.exp(Number(scenario.realBasis) * timeInYears * 12);
+        
+        setRealPrices(prev => ({
+          ...prev,
+          [monthKey]: realPrice
+        }));
+
+        // Set forward price to base forward (without basis)
+        setManualForwards(prev => ({
+          ...prev,
+          [monthKey]: baseForwards[monthKey]
+        }));
+      }
+    }
+
+    // Recalculate results
     calculateResults();
   };
 
@@ -488,9 +652,383 @@ const Index = () => {
     }, {});
   };
 
+  // Modifier le gestionnaire de changement du prix spot
+  const handleSpotPriceChange = (newPrice: number) => {
+    setParams(prev => ({
+      ...prev,
+      spotPrice: newPrice
+    }));
+    setInitialSpotPrice(newPrice); // Mettre à jour le prix spot initial uniquement lors des modifications manuelles
+  };
+
+  // Add this useEffect near your other useEffect hooks
+  useEffect(() => {
+    if (!realPriceParams.useSimulation) {
+      // When switching to manual mode, initialize real prices with forward prices
+      const initialRealPrices = {};
+      results?.forEach(row => {
+        const date = new Date(row.date);
+        const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+        initialRealPrices[monthKey] = row.forward;
+      });
+      setRealPrices(initialRealPrices);
+    }
+  }, [realPriceParams.useSimulation]);
+
+  const saveScenario = () => {
+    if (!results || !payoffData) return;
+
+    const scenario: SavedScenario = {
+      id: crypto.randomUUID(),
+      name: `Scenario ${new Date().toLocaleDateString()}`,
+      timestamp: Date.now(),
+      params,
+      strategy,
+      results,
+      payoffData,
+      stressTest: activeStressTest ? stressTestScenarios[activeStressTest] : null
+    };
+
+    const savedScenarios = JSON.parse(localStorage.getItem('optionScenarios') || '[]');
+    savedScenarios.push(scenario);
+    localStorage.setItem('optionScenarios', JSON.stringify(savedScenarios));
+
+    alert('Scenario saved successfully!');
+  };
+
+  // Save state when important values change
+  useEffect(() => {
+    const state: CalculatorState = {
+      params,
+      strategy,
+      results,
+      payoffData,
+      manualForwards,
+      realPrices,
+      realPriceParams,
+      activeTab,
+      customScenario,
+      stressTestScenarios
+    };
+    localStorage.setItem('calculatorState', JSON.stringify(state));
+  }, [
+    params,
+    strategy,
+    results,
+    payoffData,
+    manualForwards,
+    realPrices,
+    realPriceParams,
+    activeTab,
+    customScenario,
+    stressTestScenarios
+  ]);
+
+  const resetScenario = (key: string) => {
+    if (DEFAULT_SCENARIOS[key]) {
+      setStressTestScenarios(prev => ({
+        ...prev,
+        [key]: { ...DEFAULT_SCENARIOS[key] }
+      }));
+    }
+  };
+
+  // Add function to clear loaded scenario
+  const clearLoadedScenario = () => {
+    setParams({
+      startDate: new Date().toISOString().split('T')[0],
+      monthsToHedge: 12,
+      interestRate: 2.0,
+      totalVolume: 1000000,
+      spotPrice: 100
+    });
+    setStrategy([]);
+    setResults(null);
+    setPayoffData([]);
+    setManualForwards({});
+    setRealPrices({});
+    setRealPriceParams({
+      useSimulation: false,
+      volatility: 0.3,
+      drift: 0.01,
+      numSimulations: 1000
+    });
+    
+    // Réinitialiser les scénarios de stress test à leurs valeurs par défaut
+    setStressTestScenarios({
+      base: {
+        name: "Base Case",
+        description: "Normal market conditions",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0,
+        isEditable: true
+      },
+      highVol: {
+        name: "High Volatility",
+        description: "Double volatility scenario",
+        volatility: 0.4,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0,
+        isEditable: true
+      },
+      crash: {
+        name: "Market Crash",
+        description: "High volatility, negative drift, price shock",
+        volatility: 0.5,
+        drift: -0.03,
+        priceShock: -0.2,
+        forwardBasis: 0,
+        isEditable: true
+      },
+      bull: {
+        name: "Bull Market",
+        description: "Low volatility, positive drift, upward shock",
+        volatility: 0.15,
+        drift: 0.02,
+        priceShock: 0.1,
+        forwardBasis: 0,
+        isEditable: true
+      },
+      contango: {
+        name: "Contango",
+        description: "Forward prices higher than spot (monthly basis in %)",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0.01,
+        isEditable: true
+      },
+      backwardation: {
+        name: "Backwardation",
+        description: "Forward prices lower than spot (monthly basis in %)",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: -0.01,
+        isEditable: true
+      },
+      contangoReal: {
+        name: "Contango (Real Prices)",
+        description: "Real prices higher than spot (monthly basis in %)",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        realBasis: 0.01,
+        isEditable: true
+      },
+      backwardationReal: {
+        name: "Backwardation (Real Prices)",
+        description: "Real prices lower than spot (monthly basis in %)",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        realBasis: -0.01,
+        isEditable: true
+      },
+      custom: {
+        name: "Custom Case",
+        description: "User-defined scenario",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0,
+        isCustom: true
+      }
+    });
+
+    // Save the current state but with cleared scenario
+    const state: CalculatorState = {
+      params: {
+        startDate: new Date().toISOString().split('T')[0],
+        monthsToHedge: 12,
+        interestRate: 2.0,
+        totalVolume: 1000000,
+        spotPrice: 100
+      },
+      strategy: [],
+      results: null,
+      payoffData: [],
+      manualForwards: {},
+      realPrices: {},
+      realPriceParams: {
+        useSimulation: false,
+        volatility: 0.3,
+        drift: 0.01,
+        numSimulations: 1000
+      },
+      activeTab: activeTab,
+      customScenario: {
+        name: "Custom Case",
+        description: "User-defined scenario",
+        volatility: 0.2,
+        drift: 0.01,
+        priceShock: 0,
+        forwardBasis: 0,
+        isCustom: true
+      },
+      stressTestScenarios: DEFAULT_SCENARIOS
+    };
+    localStorage.setItem('calculatorState', JSON.stringify(state));
+  };
+
+  // Add this function to prepare content for PDF export
+  const prepareForPDF = () => {
+    // Ensure tables don't break across pages
+    const tables = document.querySelectorAll('table');
+    tables.forEach(table => {
+      (table as HTMLElement).style.pageBreakInside = 'avoid';
+      (table as HTMLElement).style.width = '100%';
+    });
+
+    // Add proper page breaks between sections
+    const sections = document.querySelectorAll('.Card');
+    sections.forEach(section => {
+      (section as HTMLElement).style.pageBreakInside = 'avoid';
+      (section as HTMLElement).style.marginBottom = '20px';
+    });
+  };
+
+  // Modify the PDF export function
+  const exportToPDF = async () => {
+    prepareForPDF();
+
+    const pdf = new jsPDF({
+      orientation: 'portrait',
+      unit: 'px',
+      compress: true
+    });
+
+    // Create a temporary div for PDF content
+    const tempDiv = document.createElement('div');
+    tempDiv.className = 'scenario-pdf-content';
+    tempDiv.innerHTML = `
+      <div class="scenario-header">
+        <h2>Scenario ${new Date().toLocaleDateString()}</h2>
+        <div class="scenario-info">
+          <div class="basic-parameters">
+            <p>Type: ${strategy[0]?.type || ''}</p>
+            <p>Start Date: ${params.startDate}</p>
+            <p>Spot Price: ${params.spotPrice}</p>
+            <p>Total Volume: ${params.totalVolume}</p>
+          </div>
+          <div class="stress-parameters">
+            <p>Volatility: ${(stressTestScenarios[activeStressTest || 'base']?.volatility * 100).toFixed(1)}%</p>
+            <p>Price Shock: ${(stressTestScenarios[activeStressTest || 'base']?.priceShock * 100).toFixed(1)}%</p>
+          </div>
+        </div>
+      </div>
+      <div class="charts-section">
+        ${document.querySelector('.pnl-evolution')?.outerHTML || ''}
+        ${document.querySelector('.payoff-diagram')?.outerHTML || ''}
+      </div>
+      <div class="detailed-results">
+        ${document.querySelector('.detailed-results table')?.outerHTML || ''}
+      </div>
+      <div class="summary-statistics">
+        ${document.querySelector('.summary-statistics table')?.outerHTML || ''}
+      </div>
+    `;
+
+    // Add styles for PDF
+    const style = document.createElement('style');
+    style.textContent = `
+      .scenario-pdf-content {
+        padding: 20px;
+        font-family: Arial, sans-serif;
+      }
+      .scenario-header {
+        margin-bottom: 20px;
+      }
+      .scenario-info {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 20px;
+        margin-bottom: 30px;
+      }
+      .charts-section {
+        display: grid;
+        grid-template-columns: 1fr;
+        gap: 20px;
+        margin-bottom: 30px;
+      }
+      table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-bottom: 20px;
+        font-size: 12px;
+      }
+      th, td {
+        border: 1px solid #ddd;
+        padding: 8px;
+        text-align: left;
+      }
+    `;
+    tempDiv.appendChild(style);
+
+    document.body.appendChild(tempDiv);
+    
+    try {
+      await pdf.html(tempDiv, {
+        ...options,
+        html2canvas: {
+          ...options.html2canvas,
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          letterRendering: true,
+          allowTaint: true,
+          foreignObjectRendering: true,
+          svgRendering: true
+        }
+      });
+      pdf.save('strategy-results.pdf');
+    } finally {
+      document.body.removeChild(tempDiv);
+    }
+  };
+
   return (
-    <div className="w-full max-w-6xl mx-auto p-4 space-y-6">
-      <Tabs defaultValue="parameters">
+    <div id="content-to-pdf" className="w-full max-w-6xl mx-auto p-4 space-y-6">
+      <style type="text/css" media="print">
+        {`
+          @page {
+            size: portrait;
+            margin: 20mm;
+          }
+          .scenario-content {
+            max-width: 800px;
+            margin: 0 auto;
+          }
+          .page-break {
+            page-break-before: always;
+          }
+          table {
+            page-break-inside: avoid;
+            font-size: 12px;
+          }
+          .chart-container {
+            page-break-inside: avoid;
+            margin-bottom: 20px;
+            height: 300px !important;
+          }
+        `}
+      </style>
+      {/* Add Clear Scenario button if a scenario is loaded */}
+      {results && (
+        <div className="flex justify-end">
+          <Button
+            variant="destructive"
+            onClick={clearLoadedScenario}
+            className="flex items-center gap-2"
+          >
+            Clear Loaded Scenario
+          </Button>
+        </div>
+      )}
+      <Tabs value={activeTab} onValueChange={setActiveTab}>
         <TabsList>
           <TabsTrigger value="parameters">Strategy Parameters</TabsTrigger>
           <TabsTrigger value="stress">Stress Testing</TabsTrigger>
@@ -540,7 +1078,7 @@ const Index = () => {
                   <Input
                     type="number"
                     value={params.spotPrice}
-                    onChange={(e) => setParams({...params, spotPrice: Number(e.target.value)})}
+                    onChange={(e) => handleSpotPriceChange(Number(e.target.value))}
                   />
                 </div>
               </div>
@@ -665,14 +1203,28 @@ const Index = () => {
         </TabsContent>
 
         <TabsContent value="stress">
-          <Card className="mb-6">
-            <CardHeader>
-              <CardTitle>Strategy Components</CardTitle>
-            </CardHeader>
-            <CardContent>
+          <Card>
+            <button
+              onClick={() => toggleInputs('strategy')}
+              className="w-full text-left bg-white rounded-md"
+            >
+              <div className="flex items-center justify-between p-3">
+                <span className="font-medium">Strategy Components</span>
+                <svg
+                  className={`w-4 h-4 transform transition-transform ${showInputs['strategy'] ? 'rotate-180' : ''}`}
+                  fill="none"
+                  stroke="currentColor"
+                  viewBox="0 0 24 24"
+                >
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                </svg>
+              </div>
+            </button>
+            {showInputs['strategy'] && (
+            <div className="px-3 pb-3">
               <div className="space-y-4">
                 {strategy.map((option, index) => (
-                  <div key={index} className="grid grid-cols-6 gap-4 items-center p-4 border rounded">
+                  <div key={index} className="grid grid-cols-5 gap-4 items-end">
                     <div>
                       <label className="block text-sm font-medium mb-1">Type</label>
                       <select
@@ -699,7 +1251,7 @@ const Index = () => {
                         value={option.strikeType}
                         onChange={(e) => updateOption(index, 'strikeType', e.target.value)}
                       >
-                        <option value="percent">Percentage</option>
+                        <option value="percentage">Percentage</option>
                         <option value="absolute">Absolute</option>
                       </select>
                     </div>
@@ -719,37 +1271,46 @@ const Index = () => {
                         onChange={(e) => updateOption(index, 'quantity', Number(e.target.value))}
                       />
                     </div>
-                    <div className="flex items-end">
-                      <Button
-                        variant="destructive"
-                        onClick={() => removeOption(index)}
-                        className="flex items-center justify-center"
-                      >
-                        <Trash2 size={16} />
-                      </Button>
-                    </div>
                   </div>
                 ))}
               </div>
-            </CardContent>
+            </div>
+            )}
           </Card>
 
-          <Card>
+          <Card className="mt-4">
             <CardHeader>
               <CardTitle>Stress Test Scenarios</CardTitle>
             </CardHeader>
             <CardContent>
               <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
                 {Object.entries(stressTestScenarios).map(([key, scenario]) => (
-                  <Card key={key} className="p-4">
-                    <h3 className="font-bold text-lg mb-2">{scenario.name}</h3>
-                    <p className="text-sm text-gray-600 mb-4">{scenario.description}</p>
-                    <div className="space-y-2">
-                      {scenario.isCustom ? (
-                        <>
+                  <Card
+                    key={key}
+                    className="w-full text-left p-3 hover:bg-gray-50"
+                  >
+                    <button
+                      onClick={() => toggleInputs(key)}
+                      className="w-full text-left p-3 hover:bg-gray-50"
+                    >
+                      <span className="font-medium">{scenario.name}</span>
+                      <svg
+                        className={`w-4 h-4 transform transition-transform ${showInputs[key] ? 'rotate-180' : ''}`}
+                        fill="none"
+                        stroke="currentColor"
+                        viewBox="0 0 24 24"
+                      >
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+                      </svg>
+                    </button>
+                    {showInputs[key] && (
+                      <div className="px-3 pb-3">
+                        <p className="text-xs text-gray-600 mb-2">{scenario.description}</p>
+                        <div className="space-y-2">
                           <div>
                             <label className="block text-sm font-medium mb-1">Volatility (%)</label>
                             <Input
+                              className="h-7"
                               type="number"
                               value={scenario.volatility * 100}
                               onChange={(e) => updateScenario(key, 'volatility', Number(e.target.value) / 100)}
@@ -759,6 +1320,7 @@ const Index = () => {
                           <div>
                             <label className="block text-sm font-medium mb-1">Drift (%)</label>
                             <Input
+                              className="h-7"
                               type="number"
                               value={scenario.drift * 100}
                               onChange={(e) => updateScenario(key, 'drift', Number(e.target.value) / 100)}
@@ -768,24 +1330,18 @@ const Index = () => {
                           <div>
                             <label className="block text-sm font-medium mb-1">Price Shock (%)</label>
                             <Input
+                              className="h-7"
                               type="number"
                               value={scenario.priceShock * 100}
                               onChange={(e) => updateScenario(key, 'priceShock', Number(e.target.value) / 100)}
                               step="0.1"
                             />
                           </div>
-                        </>
-                      ) : (
-                        <>
-                          <p className="text-sm">Volatility: {(scenario.volatility * 100).toFixed(1)}%</p>
-                          <p className="text-sm">Drift: {(scenario.drift * 100).toFixed(1)}%</p>
-                          {scenario.priceShock !== 0 && (
-                            <p className="text-sm">Price Shock: {(scenario.priceShock * 100).toFixed(1)}%</p>
-                          )}
-                          {scenario.isEditable && (
+                          {scenario.forwardBasis !== undefined && (
                             <div>
                               <label className="block text-sm font-medium mb-1">Monthly Basis (%)</label>
                               <Input
+                                className="h-7"
                                 type="number"
                                 value={scenario.forwardBasis * 100}
                                 onChange={(e) => updateScenario(key, 'forwardBasis', Number(e.target.value) / 100)}
@@ -793,20 +1349,39 @@ const Index = () => {
                               />
                             </div>
                           )}
-                        </>
-                      )}
-                    </div>
-                    <Button 
-                      className="w-full mt-4"
-                      onClick={() => applyStressTest(key)}
-                    >
-                      Run Scenario
-                    </Button>
+                        </div>
+                        <Button
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            applyStressTest(key);
+                          }}
+                          className="w-full bg-[#0f172a] text-white hover:bg-[#1e293b] mt-4"
+                        >
+                          Run Scenario
+                        </Button>
+                      </div>
+                    )}
                   </Card>
                 ))}
               </div>
             </CardContent>
           </Card>
+
+          <div className="flex gap-4 mt-6">
+            <Button onClick={calculateResults} className="flex-1">
+              Calculate Results
+            </Button>
+            {results && (
+              <>
+                <Button onClick={saveScenario} className="flex items-center gap-2">
+                  <Save size={16} /> Save Scenario
+                </Button>
+                <Link to="/saved">
+                  <Button variant="outline">View Saved Scenarios</Button>
+                </Link>
+              </>
+            )}
+          </div>
         </TabsContent>
       </Tabs>
 
@@ -866,7 +1441,13 @@ const Index = () => {
                         <td className="border p-2">
                           <Input
                             type="number"
-                            value={row.realPrice.toFixed(2)}
+                            value={(() => {
+                              const date = new Date(row.date);
+                              const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                              return realPriceParams.useSimulation ? 
+                                row.realPrice.toFixed(2) : 
+                                (realPrices[monthKey] || row.forward);
+                            })()}
                             onChange={(e) => {
                               const date = new Date(row.date);
                               const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
@@ -1101,5 +1682,6 @@ const Index = () => {
   );
 };
 
-export default Index;
+export default Index; 
+
 
