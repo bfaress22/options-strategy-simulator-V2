@@ -6,6 +6,13 @@ import jsPDF from 'jspdf';
 import 'jspdf-autotable';
 import html2canvas from 'html2canvas';
 
+// Add type augmentation at the top of the file
+declare module 'jspdf' {
+  interface jsPDF {
+    autoTable: (options: any) => jsPDF;
+  }
+}
+
 interface Props {
   scenarios: SavedScenario[];
   selectedScenarios: string[];

@@ -291,10 +291,19 @@ const Index = () => {
     }));
   };
 
-  // Calculate Black-Scholes Option Price
-  const calculateOptionPrice = (type, S, K, r, t, sigma) => {
-    const d1 = (Math.log(S/K) + (r + sigma**2/2)*t) / (sigma*Math.sqrt(t));
-    const d2 = d1 - sigma*Math.sqrt(t);
+  // Ajouter les états pour la volatilité implicite
+  const [showImpliedVol, setShowImpliedVol] = useState(false);
+  const [customVolatilities, setCustomVolatilities] = useState<{[key: string]: number}>({});
+
+  // Modifier la fonction de calcul des options pour utiliser la volatilité implicite
+  const calculateOptionPrice = (type: string, S: number, K: number, r: number, t: number, sigma: number, monthKey?: string) => {
+    // Utiliser la volatilité implicite si disponible
+    const effectiveVolatility = (showImpliedVol && monthKey && customVolatilities[monthKey]) 
+      ? customVolatilities[monthKey] 
+      : sigma;
+
+    const d1 = (Math.log(S/K) + (r + effectiveVolatility**2/2)*t) / (effectiveVolatility*Math.sqrt(t));
+    const d2 = d1 - effectiveVolatility*Math.sqrt(t);
     
     const Nd1 = (1 + erf(d1/Math.sqrt(2)))/2;
     const Nd2 = (1 + erf(d2/Math.sqrt(2)))/2;
@@ -1122,6 +1131,20 @@ const Index = () => {
                   </div>
                 )}
               </div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className="col-span-2">
+                  <div className="flex items-center gap-2 mb-4">
+                    <input
+                      type="checkbox"
+                      id="useImpliedVol"
+                      checked={showImpliedVol}
+                      onChange={(e) => setShowImpliedVol(e.target.checked)}
+                    />
+                    <label htmlFor="useImpliedVol">Use Monthly Implied Volatility</label>
+                  </div>
+                </div>
+              </div>
             </CardContent>
           </Card>
 
@@ -1400,6 +1423,11 @@ const Index = () => {
                       <th className="border p-2">Time to Maturity</th>
                       <th className="border p-2 bg-gray-50">Forward Price</th>
                       <th className="border p-2 bg-blue-50">Real Price {realPriceParams.useSimulation ? '(Simulated)' : '(Manual Input)'}</th>
+                      {showImpliedVol && (
+                        <th className="border p-2">
+                          IV (%)
+                        </th>
+                      )}
                       {strategy.map((opt, i) => (
                         <th key={i} className="border p-2">{opt.type === 'call' ? 'Call' : 'Put'} Price {i + 1}</th>
                       ))}
@@ -1412,68 +1440,107 @@ const Index = () => {
                     </tr>
                   </thead>
                   <tbody>
-                    {results.map((row, i) => (
-                      <tr key={i}>
-                        <td className="border p-2">{row.date}</td>
-                        <td className="border p-2">{row.timeToMaturity.toFixed(4)}</td>
-                        <td className="border p-2">
-                          <Input
-                            type="number"
-                            value={(() => {
-                              const date = new Date(row.date);
-                              const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-                              return manualForwards[monthKey] || row.forward.toFixed(2);
-                            })()}
-                            onChange={(e) => {
-                              const date = new Date(row.date);
-                              const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-                              const newValue = e.target.value === '' ? '' : Number(e.target.value);
-                              setManualForwards(prev => ({
-                                ...prev,
-                                [monthKey]: newValue
-                              }));
-                            }}
-                            onBlur={() => calculateResults()}
-                            className="w-32 text-right"
-                            step="0.01"
-                          />
-                        </td>
-                        <td className="border p-2">
-                          <Input
-                            type="number"
-                            value={(() => {
-                              const date = new Date(row.date);
-                              const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-                              return realPriceParams.useSimulation ? 
-                                row.realPrice.toFixed(2) : 
-                                (realPrices[monthKey] || row.forward);
-                            })()}
-                            onChange={(e) => {
-                              const date = new Date(row.date);
-                              const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-                              const newValue = e.target.value === '' ? '' : Number(e.target.value);
-                              setRealPrices(prev => ({
-                                ...prev,
-                                [monthKey]: newValue
-                              }));
-                            }}
-                            onBlur={() => calculateResults()}
-                            className="w-32 text-right"
-                            step="0.01"
-                            disabled={realPriceParams.useSimulation}
-                          />
-                        </td>
-                        {row.optionPrices.map((opt, j) => (
-                          <td key={j} className="border p-2">{opt.price.toFixed(2)}</td>
-                        ))}
-                        <td className="border p-2">{row.strategyPrice.toFixed(2)}</td>
-                        <td className="border p-2">{row.totalPayoff.toFixed(2)}</td>
-                        <td className="border p-2">{row.monthlyVolume.toFixed(0)}</td>
-                        <td className="border p-2">{row.hedgedCost.toFixed(2)}</td>
-                        <td className="border p-2">{row.unhedgedCost.toFixed(2)}</td>
-                        <td className="border p-2">{row.deltaPnL.toFixed(2)}</td>
-                      </tr>
-                    ))}
+                    {results.map((row, i) => {
+                      const date = new Date(row.date);
+                      const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                      
+                      return (
+                        <tr key={i}>
+                          <td className="border p-2">{row.date}</td>
+                          <td className="border p-2">{row.timeToMaturity.toFixed(4)}</td>
+                          <td className="border p-2">
+                            <Input
+                              type="number"
+                              value={(() => {
+                                const date = new Date(row.date);
+                                const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                                return manualForwards[monthKey] || row.forward.toFixed(2);
+                              })()}
+                              onChange={(e) => {
+                                const date = new Date(row.date);
+                                const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                                const newValue = e.target.value === '' ? '' : Number(e.target.value);
+                                setManualForwards(prev => ({
+                                  ...prev,
+                                  [monthKey]: newValue
+                                }));
+                              }}
+                              onBlur={() => calculateResults()}
+                              className="w-32 text-right"
+                              step="0.01"
+                            />
+                          </td>
+                          <td className="border p-2">
+                            <Input
+                              type="number"
+                              value={(() => {
+                                const date = new Date(row.date);
+                                const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                                return realPriceParams.useSimulation ? 
+                                  row.realPrice.toFixed(2) : 
+                                  (realPrices[monthKey] || row.forward);
+                              })()}
+                              onChange={(e) => {
+                                const date = new Date(row.date);
+                                const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
+                                const newValue = e.target.value === '' ? '' : Number(e.target.value);
+                                setRealPrices(prev => ({
+                                  ...prev,
+                                  [monthKey]: newValue
+                                }));
+                              }}
+                              onBlur={() => calculateResults()}
+                              className="w-32 text-right"
+                              step="0.01"
+                              disabled={realPriceParams.useSimulation}
+                            />
+                          </td>
+                          {showImpliedVol && (
+                            <td className="border p-2">
+                              <Input
+                                type="number"
+                                min="0"
+                                step="0.1"
+                                value={customVolatilities[monthKey] ? (customVolatilities[monthKey] * 100).toFixed(1) : ''}
+                                onChange={(e) => {
+                                  const newVol = parseFloat(e.target.value);
+                                  if (!isNaN(newVol) && newVol >= 0) {
+                                    setCustomVolatilities(prev => ({
+                                      ...prev,
+                                      [monthKey]: newVol / 100
+                                    }));
+                                    calculateResults();
+                                  }
+                                }}
+                                className="w-20 text-right"
+                                placeholder="Enter IV"
+                              />
+                            </td>
+                          )}
+                          {row.optionPrices.map((opt, j) => (
+                            <td key={j} className="border p-2">
+                              {calculateOptionPrice(
+                                opt.type,
+                                row.forward,
+                                opt.strike,
+                                params.interestRate/100,
+                                row.timeToMaturity,
+                                showImpliedVol && customVolatilities[monthKey] 
+                                  ? customVolatilities[monthKey] 
+                                  : strategy[j].volatility/100,
+                                monthKey
+                              ).toFixed(2)}
+                            </td>
+                          ))}
+                          <td className="border p-2">{row.strategyPrice.toFixed(2)}</td>
+                          <td className="border p-2">{row.totalPayoff.toFixed(2)}</td>
+                          <td className="border p-2">{row.monthlyVolume.toFixed(0)}</td>
+                          <td className="border p-2">{row.hedgedCost.toFixed(2)}</td>
+                          <td className="border p-2">{row.unhedgedCost.toFixed(2)}</td>
+                          <td className="border p-2">{row.deltaPnL.toFixed(2)}</td>
+                        </tr>
+                      );
+                    })}
                   </tbody>
                 </table>
               </div>
@@ -1614,7 +1681,7 @@ const Index = () => {
                               })}
                             </td>
                             <td className="border p-2 text-right">
-                              {((data.deltaPnL / Math.abs(data.unhedgedCost)) * 100).toFixed(2)}%
+                              {((data.deltaPnL / Math.abs(data.unhedgedCost)) * 100).toFixed(2) + '%'}
                             </td>
                           </tr>
                         ))}
@@ -1683,5 +1750,3 @@ const Index = () => {
 };
 
 export default Index; 
-
-
