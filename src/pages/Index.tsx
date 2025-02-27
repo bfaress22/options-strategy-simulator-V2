@@ -67,6 +67,18 @@ interface SavedScenario {
   stressTest?: StressTestScenario;
 }
 
+interface PdfOptions {
+  html2canvas: {
+    scale: number;
+    useCORS: boolean;
+    logging: boolean;
+    letterRendering: boolean;
+    allowTaint: boolean;
+    foreignObjectRendering: boolean;
+    svgRendering: boolean;
+  };
+}
+
 const DEFAULT_SCENARIOS = {
   base: {
     name: "Base Case",
@@ -431,105 +443,90 @@ const Index = () => {
 
   // Calculate detailed results
   const calculateResults = () => {
-    const startDate = new Date(params.startDate);
-    const months = [];
-    let currentDate = new Date(startDate);
+    if (!strategy.length) return;
 
-    const lastDayOfStartMonth = new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0);
-    const remainingDaysInMonth = lastDayOfStartMonth.getDate() - currentDate.getDate() + 1;
+    const newResults = [];
+    let startDate = new Date(params.startDate);
 
-    if (remainingDaysInMonth > 0) {
-      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
-    }
-
-    for (let i = 0; i < params.monthsToHedge - (remainingDaysInMonth > 0 ? 1 : 0); i++) {
-      currentDate.setMonth(currentDate.getMonth() + 1);
-      months.push(new Date(currentDate.getFullYear(), currentDate.getMonth() + 1, 0));
-    }
-
-    // If simulation is enabled, generate new real prices
-    if (realPriceParams.useSimulation) {
-      const simulatedPrices = simulateRealPrices(months, startDate);
-      setRealPrices(simulatedPrices);
-    }
-
-    const timeToMaturities = months.map(date => {
-      const diffTime = Math.abs(date.getTime() - startDate.getTime());
-      return diffTime / (325.25 * 24 * 60 * 60 * 1000);
-    });
-
-    const monthlyVolume = params.totalVolume / params.monthsToHedge;
-
-    const detailedResults = months.map((date, i) => {
-      // Get forward price
-      const forward = (() => {
-        const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-        const timeDiff = date.getTime() - startDate.getTime();
-        return manualForwards[monthKey] || 
-          initialSpotPrice * Math.exp(params.interestRate/100 * timeDiff/(1000 * 60 * 60 * 24 * 365));
-      })();
-
-      // Get real price and store monthKey for reuse
+    for (let i = 0; i < params.monthsToHedge; i++) {
+      const date = new Date(startDate);
+      date.setMonth(date.getMonth() + i);
       const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
-      const realPrice = realPrices[monthKey] || forward;
+      
+      // Calculer le temps jusqu'à l'échéance
+      const timeToMaturity = (params.monthsToHedge - i) / 12;
 
-      const t = timeToMaturities[i];
+      // Obtenir le prix forward
+      const forward = manualForwards[monthKey] || params.spotPrice;
 
-      // Calculate option prices using forward price (for initial cost)
-      const optionPrices = strategy.map((option, optIndex) => {
-        const strike = option.strikeType === 'percent' ? 
-          params.spotPrice * (option.strike/100) : 
-          option.strike;
-        
+      // Calculer les prix des options avec la volatilité implicite si disponible
+      const optionPrices = strategy.map(opt => {
+        const strike = opt.strikeType === 'percent' 
+          ? params.spotPrice * (1 + opt.strike/100) 
+          : opt.strike;
+
+        const price = calculateOptionPrice(
+          opt.type,
+          forward,
+          strike,
+          params.interestRate/100,
+          timeToMaturity,
+          showImpliedVol && customVolatilities[monthKey] 
+            ? customVolatilities[monthKey] 
+            : opt.volatility/100,
+          monthKey
+        );
+
         return {
-          type: option.type,
-          price: calculateOptionPrice(
-            option.type,
-            forward,
-            strike,
-            params.interestRate/100,
-            t,
-            option.volatility/100
-          ),
-          quantity: option.quantity/100,
-          strike: strike,
-          label: `${option.type === 'call' ? 'Call' : 'Put'} Price ${optIndex + 1}`
+          type: opt.type,
+          price,
+          quantity: opt.quantity/100,
+          strike,
+          label: `${opt.type} ${strike}`
         };
       });
 
-      // Calculate strategy price (cost of options)
-      const strategyPrice = optionPrices.reduce((total, opt) => 
-        total + (opt.price * opt.quantity), 0);
+      // Calculer le prix de la stratégie
+      const strategyPrice = optionPrices.reduce((sum, opt) => 
+        sum + opt.price * opt.quantity, 0);
 
-      // Calculate payoff using real price
-      const totalPayoff = optionPrices.reduce((sum, opt) => {
-        const payoff = opt.type === 'call' 
-          ? Math.max(realPrice - opt.strike, 0)
-          : Math.max(opt.strike - realPrice, 0);
-        return sum + (payoff * opt.quantity);
-      }, 0);
+      // Calculer les autres métriques
+      const realPrice = realPriceParams.useSimulation 
+        ? calculateSimulatedPrice(params.spotPrice, i, realPriceParams)
+        : (realPrices[monthKey] || forward);
 
-      // Calculate hedged cost using real price and including payoff
-      const hedgedCost = -(monthlyVolume * realPrice) - (monthlyVolume * strategyPrice) + (monthlyVolume * totalPayoff);
-      const unhedgedCost = -(monthlyVolume * realPrice);
+      const monthlyVolume = params.totalVolume / params.monthsToHedge;
+      const hedgedCost = monthlyVolume * (realPrice + strategyPrice);
+      const unhedgedCost = monthlyVolume * realPrice;
+      const deltaPnL = unhedgedCost - hedgedCost;
 
-      return {
-        date: `${monthNames[date.getMonth()]} ${date.getFullYear()}`,
-        timeToMaturity: t,
+      newResults.push({
+        date: date.toISOString().split('T')[0],
+        timeToMaturity,
         forward,
         realPrice,
         optionPrices,
         strategyPrice,
-        totalPayoff,
+        totalPayoff: -strategyPrice,
         monthlyVolume,
         hedgedCost,
         unhedgedCost,
-        deltaPnL: hedgedCost - unhedgedCost
-      };
-    });
+        deltaPnL
+      });
+    }
 
-    setResults(detailedResults);
+    setResults(newResults);
     calculatePayoff();
+  };
+
+  // Ajouter cette fonction avant calculateResults
+  const calculateSimulatedPrice = (spotPrice: number, monthIndex: number, params: { volatility: number; drift: number }) => {
+    const t = monthIndex / 12;
+    const drift = params.drift;
+    const volatility = params.volatility;
+    
+    // Formule du mouvement brownien géométrique
+    return spotPrice * Math.exp((drift - volatility * volatility / 2) * t + volatility * Math.sqrt(t) * (Math.random() * 2 - 1));
   };
 
   useEffect(() => {
@@ -980,10 +977,8 @@ const Index = () => {
     document.body.appendChild(tempDiv);
     
     try {
-      await pdf.html(tempDiv, {
-        ...options,
+      const options: PdfOptions = {
         html2canvas: {
-          ...options.html2canvas,
           scale: 2,
           useCORS: true,
           logging: false,
@@ -991,6 +986,13 @@ const Index = () => {
           allowTaint: true,
           foreignObjectRendering: true,
           svgRendering: true
+        }
+      };
+
+      await pdf.html(tempDiv, {
+        ...options,
+        html2canvas: {
+          ...options.html2canvas
         }
       });
       pdf.save('strategy-results.pdf');
