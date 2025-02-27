@@ -422,15 +422,84 @@ const Index = () => {
   };
 
   // Remove option from strategy
-  const removeOption = (index) => {
-    const newStrategy = strategy.filter((_, i) => i !== index);
+  const removeOption = (indexToRemove: number) => {
+    // Créer une copie profonde de la stratégie actuelle
+    const newStrategy = JSON.parse(JSON.stringify(strategy));
+    newStrategy.splice(indexToRemove, 1);
+    
+    // Mettre à jour l'état de la stratégie
     setStrategy(newStrategy);
     
-    if (newStrategy.length > 0) {
-      calculatePayoff();
-    } else {
+    // Si la stratégie est vide
+    if (newStrategy.length === 0) {
+      setResults(null);
       setPayoffData([]);
+      return;
     }
+
+    // Si les résultats existent déjà, les mettre à jour
+    if (results) {
+      setResults(results.map(row => {
+        const monthKey = `${new Date(row.date).getFullYear()}-${new Date(row.date).getMonth() + 1}`;
+        
+        // Recalculer les prix des options restantes
+        const optionPrices = newStrategy.map(opt => {
+          const strike = opt.strikeType === 'percent' 
+            ? params.spotPrice * (opt.strike/100) 
+            : opt.strike;
+
+          const volatility = showImpliedVol && customVolatilities[monthKey] 
+            ? customVolatilities[monthKey] 
+            : opt.volatility/100;
+
+          const price = calculateOptionPrice(
+            opt.type,
+            row.forward,
+            strike,
+            params.interestRate/100,
+            row.timeToMaturity,
+            volatility,
+            monthKey
+          );
+
+          return {
+            type: opt.type,
+            price,
+            quantity: opt.quantity/100,
+            strike,
+            label: `${opt.type} ${strike}`
+          };
+        });
+
+        // Recalculer le prix de la stratégie
+        const strategyPrice = optionPrices.reduce((sum, opt) => 
+          sum + opt.price * opt.quantity, 0);
+
+        // Recalculer le payoff
+        const totalPayoff = optionPrices.reduce((sum, opt) => {
+          const intrinsicValue = opt.type === 'call'
+            ? Math.max(row.realPrice - opt.strike, 0)
+            : Math.max(opt.strike - row.realPrice, 0);
+          return sum + intrinsicValue * opt.quantity;
+        }, 0);
+
+        // Mettre à jour les coûts et P&L
+        const hedgedCost = row.monthlyVolume * (row.realPrice + strategyPrice - totalPayoff);
+        const deltaPnL = row.unhedgedCost - hedgedCost;
+
+        return {
+          ...row,
+          optionPrices,
+          strategyPrice,
+          totalPayoff,
+          hedgedCost,
+          deltaPnL
+        };
+      }));
+    }
+
+    // Mettre à jour le diagramme de payoff
+    calculatePayoff();
   };
 
   // Update option parameters
@@ -443,27 +512,55 @@ const Index = () => {
 
   // Calculate detailed results
   const calculateResults = () => {
-    if (!strategy.length) return;
+    // Vérifier si la stratégie existe et n'est pas vide
+    if (!strategy || strategy.length === 0) {
+      setResults(null);
+      setPayoffData([]);
+      return;
+    }
 
     const newResults = [];
     let startDate = new Date(params.startDate);
+    const endDate = new Date(startDate);
+    endDate.setMonth(endDate.getMonth() + params.monthsToHedge - 1);
+    
+    // Calculer le nombre de jours dans le premier mois
+    const lastDayOfStartMonth = new Date(startDate.getFullYear(), startDate.getMonth() + 1, 0);
+    const daysInFirstMonth = lastDayOfStartMonth.getDate() - startDate.getDate() + 1;
+    const totalDaysInFirstMonth = lastDayOfStartMonth.getDate();
 
     for (let i = 0; i < params.monthsToHedge; i++) {
       const date = new Date(startDate);
       date.setMonth(date.getMonth() + i);
       const monthKey = `${date.getFullYear()}-${date.getMonth() + 1}`;
       
-      // Calculer le temps jusqu'à l'échéance
-      const timeToMaturity = (params.monthsToHedge - i) / 12;
+      // Calcul du temps jusqu'à l'échéance
+      let timeToMaturity;
+      if (i === 0) {
+        // Pour le premier mois, utiliser les jours restants
+        timeToMaturity = daysInFirstMonth / (totalDaysInFirstMonth * params.monthsToHedge);
+      } else {
+        // Pour les mois suivants, progression régulière
+        timeToMaturity = i / params.monthsToHedge;
+      }
 
-      // Obtenir le prix forward
+      // 2. Prix forward
       const forward = manualForwards[monthKey] || params.spotPrice;
 
-      // Calculer les prix des options avec la volatilité implicite si disponible
+      // 3. Prix réel
+      const realPrice = realPriceParams.useSimulation 
+        ? calculateSimulatedPrice(params.spotPrice, i, realPriceParams)
+        : (realPrices[monthKey] || forward);
+
+      // 4. Calcul correct des prix d'options
       const optionPrices = strategy.map(opt => {
         const strike = opt.strikeType === 'percent' 
-          ? params.spotPrice * (1 + opt.strike/100) 
+          ? params.spotPrice * (opt.strike/100) 
           : opt.strike;
+
+        const volatility = showImpliedVol && customVolatilities[monthKey] 
+          ? customVolatilities[monthKey] 
+          : opt.volatility/100;
 
         const price = calculateOptionPrice(
           opt.type,
@@ -471,9 +568,7 @@ const Index = () => {
           strike,
           params.interestRate/100,
           timeToMaturity,
-          showImpliedVol && customVolatilities[monthKey] 
-            ? customVolatilities[monthKey] 
-            : opt.volatility/100,
+          volatility,
           monthKey
         );
 
@@ -486,17 +581,20 @@ const Index = () => {
         };
       });
 
-      // Calculer le prix de la stratégie
+      // 5. Prix de la stratégie (somme des primes)
       const strategyPrice = optionPrices.reduce((sum, opt) => 
         sum + opt.price * opt.quantity, 0);
 
-      // Calculer les autres métriques
-      const realPrice = realPriceParams.useSimulation 
-        ? calculateSimulatedPrice(params.spotPrice, i, realPriceParams)
-        : (realPrices[monthKey] || forward);
+      // 6. Calcul du payoff (valeur intrinsèque à la date donnée)
+      const totalPayoff = optionPrices.reduce((sum, opt) => {
+        const intrinsicValue = opt.type === 'call'
+          ? Math.max(realPrice - opt.strike, 0)
+          : Math.max(opt.strike - realPrice, 0);
+        return sum + intrinsicValue * opt.quantity;
+      }, 0);
 
       const monthlyVolume = params.totalVolume / params.monthsToHedge;
-      const hedgedCost = monthlyVolume * (realPrice + strategyPrice);
+      const hedgedCost = monthlyVolume * (realPrice + strategyPrice - totalPayoff);
       const unhedgedCost = monthlyVolume * realPrice;
       const deltaPnL = unhedgedCost - hedgedCost;
 
@@ -507,7 +605,7 @@ const Index = () => {
         realPrice,
         optionPrices,
         strategyPrice,
-        totalPayoff: -strategyPrice,
+        totalPayoff,
         monthlyVolume,
         hedgedCost,
         unhedgedCost,
@@ -1683,7 +1781,7 @@ const Index = () => {
                               })}
                             </td>
                             <td className="border p-2 text-right">
-                              {((data.deltaPnL / Math.abs(data.unhedgedCost)) * 100).toFixed(2) + '%'}
+                              {(((data.deltaPnL / Math.abs(data.unhedgedCost)) * 100).toFixed(2) + '%')}
                             </td>
                           </tr>
                         ))}
@@ -1736,7 +1834,7 @@ const Index = () => {
                         {(() => {
                           const totalPnL = results.reduce((sum, row) => sum + row.deltaPnL, 0);
                           const totalUnhedgedCost = results.reduce((sum, row) => sum + row.unhedgedCost, 0);
-                          return ((totalPnL / Math.abs(totalUnhedgedCost)) * 100).toFixed(2) + '%';
+                          return (((totalPnL / Math.abs(totalUnhedgedCost)) * 100).toFixed(2) + '%');
                         })()}
                       </td>
                     </tr>
